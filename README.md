@@ -12,6 +12,10 @@ Three players, one groove. A browser band where one person plays a chord synth, 
 - Anyone can press Play / Stop. Only the drummer changes the tempo.
 - The page opens straight into the room `jam`. Add `?room=name` to the URL for a different room. You are handed the first free instrument on arrival; type your name in the field in your panel. A fourth visitor watches.
 
+## Making your own default pattern
+
+Open the page with `?all` in the URL (for example `http://localhost:5180/?room=mine&all`) and every panel becomes editable, so you can program all three instruments yourself. Play until the groove is right, press "Copy pattern" in the top bar, and paste the clipboard contents over `src/default-pattern.json`. Every new room then starts from that pattern, including knob settings.
+
 ## How it works
 
 - All sound is synthesized in the browser with the Web Audio API. Nothing is streamed.

@@ -116,6 +116,7 @@ input {
   background: linear-gradient(#2a2a32, #17171c);
   box-shadow: 0 2px 3px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
+.transport button.quiet { margin-left: 12px; font-size: 12px; color: var(--muted); background: transparent; box-shadow: none; }
 .status { margin-left: auto; font-size: 13px; color: var(--muted); }
 
 .panels {
@@ -138,7 +139,7 @@ input {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 18px 20px;
+  padding: 28px 28px 24px;
   min-width: 0;
   overflow: auto;
   border-radius: 8px;
@@ -149,6 +150,7 @@ input {
 }
 
 .panel.mine { filter: none; }
+.panel > * { flex-shrink: 0; }
 .panel:not(.mine) .controls,
 .panel:not(.mine) .grid { pointer-events: none; }
 
@@ -160,11 +162,12 @@ input {
 
 .brand-block { display: flex; flex-direction: column; line-height: 1.1; }
 .brand-block h2 { margin: 0; font-size: 20px; letter-spacing: 0.04em; text-shadow: 0 1px 0 rgba(255, 255, 255, 0.15), 0 -1px 0 rgba(0, 0, 0, 0.4); }
-.brand-block small { font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-muted); }
+.brand-block small { font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-muted); white-space: nowrap; }
 
 .display {
   min-width: 58px;
   padding: 5px 10px;
+  white-space: nowrap;
   border-radius: 3px;
   background: #0a0c0a;
   color: #ff6b3d;
@@ -355,7 +358,6 @@ input {
 .cell.head { border-color: #fff; }
 .panel:not(.mine) .cell { cursor: default; }
 
-.hint { margin-top: auto; padding-top: 10px; font-size: 11px; color: var(--ink-muted); }
 
 /* ---------- Drum machine ---------- */
 
@@ -482,7 +484,7 @@ input {
 
 .keys {
   position: relative;
-  height: 96px;
+  height: 88px;
   padding: 6px 6px 8px;
   border-radius: 6px;
   background: linear-gradient(#24201b, #16140f);
@@ -553,10 +555,3 @@ input {
 .panel.bass .cell.beat { background: linear-gradient(#2c2c2c, #1e1e1e); }
 .panel.bass .cell.on { background: linear-gradient(#c4ffcb, var(--accent)); border-color: var(--accent); box-shadow: 0 0 8px rgba(159, 240, 168, 0.6); }
 .panel.bass .cell.head { border-color: #fff; }
-.panel.bass .hint::before {
-  content: '';
-  display: block;
-  height: 26px;
-  margin-bottom: 10px;
-  background: radial-gradient(circle, #000 30%, #9a9a9a 34%, #5a5a5a 44%, transparent 48%) 0 0 / 26px 26px repeat-x;
-}

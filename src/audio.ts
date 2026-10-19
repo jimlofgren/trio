@@ -18,73 +18,84 @@ function lin(v: number, min: number, max: number): number {
 }
 
 export class AudioEngine {
-  private ctx: AudioContext;
-  private master: GainNode;
-  private drumBus: GainNode;
-  private synthBus: GainNode;
-  private bassBus: GainNode;
-  private echoSend: GainNode;
-  private echoDelay: DelayNode;
-  private echoFeedback: GainNode;
-  private synthDuck: GainNode;
-  private bassDuck: GainNode;
-  private noise: AudioBuffer;
+  private ctx: AudioContext | null = null;
+  private master!: GainNode;
+  private drumBus!: GainNode;
+  private synthBus!: GainNode;
+  private bassBus!: GainNode;
+  private echoSend!: GainNode;
+  private echoDelay!: DelayNode;
+  private echoFeedback!: GainNode;
+  private synthDuck!: GainNode;
+  private bassDuck!: GainNode;
+  private noise!: AudioBuffer;
   private bassVoice: { gain: GainNode; oscs: OscillatorNode[]; hz: number } | null = null;
   private nextStep = 0;
   private timer: number | null = null;
   private state: State | null = null;
   private serverNow: () => number;
   private onStep: (step: number) => void;
+  private stateListeners: Array<() => void> = [];
 
   constructor(serverNow: () => number, onStep: (step: number) => void) {
-    this.ctx = new AudioContext();
     this.serverNow = serverNow;
     this.onStep = onStep;
-    this.master = this.ctx.createGain();
+  }
+
+  private build(): AudioContext {
+    const ctx = new AudioContext();
+    this.ctx = ctx;
+    for (const cb of this.stateListeners) ctx.addEventListener('statechange', cb);
+    this.master = ctx.createGain();
     this.master.gain.value = 0.7;
-    const comp = this.ctx.createDynamicsCompressor();
+    const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -10;
     comp.knee.value = 6;
     comp.ratio.value = 3;
     comp.release.value = 0.2;
-    this.master.connect(comp).connect(this.ctx.destination);
+    this.master.connect(comp).connect(ctx.destination);
     this.noise = this.makeNoise();
 
-    this.drumBus = this.ctx.createGain();
+    this.drumBus = ctx.createGain();
     this.drumBus.connect(this.master);
 
-    this.synthDuck = this.ctx.createGain();
+    this.synthDuck = ctx.createGain();
     this.synthDuck.connect(this.master);
-    this.bassDuck = this.ctx.createGain();
+    this.bassDuck = ctx.createGain();
     this.bassDuck.connect(this.master);
 
-    this.synthBus = this.ctx.createGain();
-    this.synthBus.gain.value = 0.8;
+    this.synthBus = ctx.createGain();
+    this.synthBus.gain.value = 1.4;
     this.buildChorus(this.synthBus).connect(this.synthDuck);
-    this.echoSend = this.ctx.createGain();
-    this.echoDelay = this.ctx.createDelay(2);
-    this.echoFeedback = this.ctx.createGain();
+    this.echoSend = ctx.createGain();
+    this.echoDelay = ctx.createDelay(2);
+    this.echoFeedback = ctx.createGain();
     const echoTone = this.filter(2200, 'lowpass', 0.7);
     const echoBody = this.filter(250, 'highpass', 0.7);
     this.synthBus.connect(this.echoSend).connect(this.echoDelay);
     this.echoDelay.connect(echoTone).connect(echoBody).connect(this.echoFeedback).connect(this.echoDelay);
     this.echoFeedback.connect(this.synthDuck);
 
-    this.bassBus = this.ctx.createGain();
+    this.bassBus = ctx.createGain();
     this.bassBus.gain.value = 0.9;
     this.bassBus.connect(this.drive(1.6)).connect(this.bassDuck);
+    if (this.state) this.applyEcho();
+    return ctx;
   }
 
   get running(): boolean {
-    return this.ctx.state === 'running';
+    return this.ctx?.state === 'running';
   }
 
   onStateChange(cb: () => void): void {
-    this.ctx.addEventListener('statechange', cb);
+    this.stateListeners.push(cb);
+    this.ctx?.addEventListener('statechange', cb);
   }
 
   async resume(): Promise<void> {
-    if (this.ctx.state !== 'running') await this.ctx.resume();
+    const ctx = this.ctx ?? this.build();
+    if (ctx.state !== 'running') await ctx.resume();
+    for (const cb of this.stateListeners) cb();
   }
 
   setState(state: State): void {
@@ -105,6 +116,7 @@ export class AudioEngine {
   }
 
   private applyEcho(): void {
+    if (!this.ctx) return;
     const p = this.state!.params.synth;
     const beat = 60 / this.state!.transport.bpm;
     const t = this.ctx.currentTime;
@@ -135,6 +147,7 @@ export class AudioEngine {
       if (step >= 0) this.onStep(step);
       return;
     }
+    const ctx = this.ctx!;
     const { startAt, bpm } = this.state.transport;
     const ms = stepMs(bpm);
     const now = this.serverNow();
@@ -142,7 +155,7 @@ export class AudioEngine {
       const dt = (startAt + this.nextStep * ms - now) / 1000;
       if (dt > LOOKAHEAD_S) break;
       if (dt > -0.05) {
-        const when = this.ctx.currentTime + Math.max(dt, 0);
+        const when = ctx.currentTime + Math.max(dt, 0);
         this.scheduleStep(this.nextStep % STEPS, when, ms / 1000);
       }
       this.nextStep++;
@@ -165,19 +178,20 @@ export class AudioEngine {
     }
     const bass = s.bass[step];
     if (bass >= 0) this.bass(BASS_LOW + bass, when, stepS, s.params.bass);
-    const delay = Math.max(0, (when - this.ctx.currentTime) * 1000);
+    const delay = Math.max(0, (when - this.ctx!.currentTime) * 1000);
     window.setTimeout(() => this.onStep(step), delay);
   }
 
   private makeNoise(): AudioBuffer {
-    const buf = this.ctx.createBuffer(1, this.ctx.sampleRate, this.ctx.sampleRate);
+    const ctx = this.ctx!;
+    const buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
     const data = buf.getChannelData(0);
     for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
     return buf;
   }
 
   private filter(freq: number, type: BiquadFilterType, q: number): BiquadFilterNode {
-    const f = this.ctx.createBiquadFilter();
+    const f = this.ctx!.createBiquadFilter();
     f.type = type;
     f.frequency.value = freq;
     f.Q.value = q;
@@ -185,7 +199,7 @@ export class AudioEngine {
   }
 
   private drive(amount: number): WaveShaperNode {
-    const shaper = this.ctx.createWaveShaper();
+    const shaper = this.ctx!.createWaveShaper();
     const curve = new Float32Array(1024);
     for (let i = 0; i < curve.length; i++) {
       const x = (i / (curve.length - 1)) * 2 - 1;
@@ -197,18 +211,19 @@ export class AudioEngine {
   }
 
   private buildChorus(input: AudioNode): AudioNode {
-    const out = this.ctx.createGain();
+    const ctx = this.ctx!;
+    const out = ctx.createGain();
     input.connect(out);
     for (const [base, rate] of [[0.011, 0.6], [0.017, 0.83]]) {
-      const delay = this.ctx.createDelay(0.1);
+      const delay = ctx.createDelay(0.1);
       delay.delayTime.value = base;
-      const lfo = this.ctx.createOscillator();
+      const lfo = ctx.createOscillator();
       lfo.frequency.value = rate;
-      const depth = this.ctx.createGain();
+      const depth = ctx.createGain();
       depth.gain.value = 0.0025;
       lfo.connect(depth).connect(delay.delayTime);
       lfo.start();
-      const wet = this.ctx.createGain();
+      const wet = ctx.createGain();
       wet.gain.value = 0.4;
       input.connect(delay).connect(wet).connect(out);
     }
@@ -216,7 +231,7 @@ export class AudioEngine {
   }
 
   private env(dest: AudioNode, when: number, peak: number, attack: number, decay: number): GainNode {
-    const g = this.ctx.createGain();
+    const g = this.ctx!.createGain();
     g.gain.setValueAtTime(0.0001, when);
     g.gain.linearRampToValueAtTime(peak, when + attack);
     g.gain.exponentialRampToValueAtTime(0.0001, when + attack + decay);
@@ -235,16 +250,17 @@ export class AudioEngine {
   }
 
   private kick(when: number, p: Params): void {
+    const ctx = this.ctx!;
     const decay = lin(p.kickDecay, 0.15, 0.9);
     const level = lin(p.kickLevel, 0, 1.1);
-    const osc = this.ctx.createOscillator();
+    const osc = ctx.createOscillator();
     const start = lin(p.kickTone, 90, 260);
     osc.frequency.setValueAtTime(start, when);
     osc.frequency.exponentialRampToValueAtTime(45, when + 0.08);
     osc.connect(this.env(this.drumBus, when, level, 0.002, decay));
     osc.start(when);
     osc.stop(when + decay + 0.05);
-    const click = this.ctx.createBufferSource();
+    const click = ctx.createBufferSource();
     click.buffer = this.noise;
     click.connect(this.filter(3000, 'highpass', 0.7)).connect(this.env(this.drumBus, when, level * 0.25, 0.001, 0.015));
     click.start(when);
@@ -252,10 +268,11 @@ export class AudioEngine {
   }
 
   private snare(when: number, p: Params): void {
+    const ctx = this.ctx!;
     const level = lin(p.snareLevel, 0, 0.9);
     const tone = lin(p.snareTone, 150, 320);
     for (const [ratio, amt] of [[1, 0.5], [1.74, 0.3]]) {
-      const osc = this.ctx.createOscillator();
+      const osc = ctx.createOscillator();
       osc.type = 'triangle';
       osc.frequency.setValueAtTime(tone * ratio, when);
       osc.frequency.exponentialRampToValueAtTime(tone * ratio * 0.7, when + 0.1);
@@ -263,7 +280,7 @@ export class AudioEngine {
       osc.start(when);
       osc.stop(when + 0.2);
     }
-    const src = this.ctx.createBufferSource();
+    const src = ctx.createBufferSource();
     src.buffer = this.noise;
     const snap = lin(p.snareSnap, 0.1, 0.9);
     src.connect(this.filter(1500, 'highpass', 0.5)).connect(this.env(this.drumBus, when, level * snap, 0.002, lin(p.snareSnap, 0.08, 0.28)));
@@ -272,12 +289,13 @@ export class AudioEngine {
   }
 
   private hat(when: number, decay: number, level: number): void {
+    const ctx = this.ctx!;
     if (level <= 0) return;
     const bp = this.filter(10000, 'bandpass', 1.2);
     const hp = this.filter(7500, 'highpass', 0.7);
     bp.connect(hp).connect(this.env(this.drumBus, when, level, 0.001, decay));
     for (const ratio of HAT_RATIOS) {
-      const osc = this.ctx.createOscillator();
+      const osc = ctx.createOscillator();
       osc.type = 'square';
       osc.frequency.value = 320 * ratio;
       osc.connect(bp);
@@ -314,10 +332,11 @@ export class AudioEngine {
   }
 
   private pad(midi: number, when: number, stepS: number, p: Params): void {
+    const ctx = this.ctx!;
     const e = this.adsr(p);
     const gateEnd = when + stepS * expo(p.gate, 0.25, 4);
-    const g = this.ctx.createGain();
-    const stopAt = this.ampEnvelope(g, when, 0.11, gateEnd, e);
+    const g = ctx.createGain();
+    const stopAt = this.ampEnvelope(g, when, 0.16, gateEnd, e);
     g.connect(this.synthBus);
     const base = expo(p.cutoff, 120, 9000);
     const peak = Math.min(16000, base * lin(p.envAmt, 1, 8));
@@ -326,11 +345,11 @@ export class AudioEngine {
     lp.connect(g);
     const hz = midiToHz(midi);
     for (const [type, detune, oct, level] of [['sawtooth', -9, 0, 0.5], ['sawtooth', 9, 0, 0.5], ['square', 0, -1, 0.22]] as const) {
-      const osc = this.ctx.createOscillator();
+      const osc = ctx.createOscillator();
       osc.type = type;
       osc.frequency.value = hz * Math.pow(2, oct);
       osc.detune.value = detune;
-      const vg = this.ctx.createGain();
+      const vg = ctx.createGain();
       vg.gain.value = level;
       osc.connect(vg).connect(lp);
       osc.start(when);
@@ -339,6 +358,7 @@ export class AudioEngine {
   }
 
   private bass(midi: number, when: number, stepS: number, p: Params): void {
+    const ctx = this.ctx!;
     const e = this.adsr(p);
     const gateEnd = when + stepS * expo(p.gate, 0.25, 2);
     const hz = midiToHz(midi);
@@ -350,7 +370,7 @@ export class AudioEngine {
       gain.setTargetAtTime(0.0001, when, 0.004);
       for (const o of previous.oscs) o.stop(when + 0.05);
     }
-    const g = this.ctx.createGain();
+    const g = ctx.createGain();
     const stopAt = this.ampEnvelope(g, when, 0.55, gateEnd, e);
     const base = expo(p.cutoff, 60, 5000);
     const peak = Math.min(12000, base * lin(p.env, 1, 10));
@@ -360,16 +380,16 @@ export class AudioEngine {
     hp.connect(lp).connect(g).connect(this.bassBus);
     const glide = previous && p.glide > 0 ? expo(p.glide, 0.01, 0.6) : 0;
     const fromHz = previous?.hz ?? hz;
-    const saw = this.ctx.createOscillator();
+    const saw = ctx.createOscillator();
     saw.type = 'sawtooth';
-    const pulse = this.ctx.createOscillator();
+    const pulse = ctx.createOscillator();
     pulse.type = 'square';
     pulse.detune.value = 6;
-    const pulseGain = this.ctx.createGain();
+    const pulseGain = ctx.createGain();
     pulseGain.gain.value = 0.35;
-    const sub = this.ctx.createOscillator();
+    const sub = ctx.createOscillator();
     sub.type = 'sine';
-    const subGain = this.ctx.createGain();
+    const subGain = ctx.createGain();
     subGain.gain.value = lin(p.sub, 0, 0.9);
     for (const [o, ratio] of [[saw, 1], [pulse, 1], [sub, 0.5]] as const) {
       if (glide > 0) {

@@ -1,3 +1,5 @@
+import pattern from './default-pattern.json';
+
 export const STEPS = 16;
 export type Slot = 'synth' | 'drums' | 'bass';
 export const SLOTS: Slot[] = ['synth', 'drums', 'bass'];
@@ -38,6 +40,8 @@ export const CONTROLS: Record<Slot, ControlSpec[]> = {
     { key: 'cutoff', label: 'Cutoff', group: 'filter' },
     { key: 'res', label: 'Reso', group: 'filter' },
     { key: 'envAmt', label: 'Env', group: 'filter' },
+    { key: 'pitchIn', label: 'In', jack: 'synth-pitch', group: 'follow bass' },
+    { key: 'follow', label: 'Root', options: ['Off', 'On'], group: 'follow bass' },
     { key: 'attack', label: 'A', group: 'envelope' },
     { key: 'decay', label: 'D', group: 'envelope' },
     { key: 'sustain', label: 'S', group: 'envelope' },
@@ -48,8 +52,6 @@ export const CONTROLS: Record<Slot, ControlSpec[]> = {
     { key: 'mix', label: 'Mix', group: 'echo' },
     { key: 'duckIn', label: 'In', jack: 'synth-duck', group: 'sidechain' },
     { key: 'duck', label: 'Duck', group: 'sidechain' },
-    { key: 'pitchIn', label: 'In', jack: 'synth-pitch', group: 'follow bass' },
-    { key: 'follow', label: 'Root', options: ['Off', 'On'], group: 'follow bass' },
   ],
   drums: [
     { key: 'kickTone', label: 'Tone', group: 'Bass Drum' },
@@ -122,26 +124,37 @@ function row(hits: number[]): boolean[] {
   return r;
 }
 
-function steps(map: Record<number, number>): number[] {
+function steps(map: Record<string, number>): number[] {
   const r = Array(STEPS).fill(-1);
   for (const [k, v] of Object.entries(map)) r[Number(k)] = v;
   return r;
 }
 
 export function defaultState(startAt: number): State {
+  const params = structuredClone(DEFAULT_PARAMS);
+  for (const slot of SLOTS) Object.assign(params[slot], pattern.params[slot]);
   return {
-    drums: [
-      row([0, 8, 10]),
-      row([4, 12]),
-      row([2, 6, 10, 14]),
-      row([15]),
-    ],
-    chordNotes: [57, 60, 64, 67],
-    chordSteps: row([2, 6, 10, 14]),
-    bass: steps({ 0: 9, 2: 9, 3: 9, 6: 7, 8: 9, 10: 9, 11: 12, 14: 4 }),
-    params: structuredClone(DEFAULT_PARAMS),
-    transport: { playing: true, startAt, bpm: 120 },
+    drums: pattern.drums.map(row),
+    chordNotes: [...pattern.chordNotes],
+    chordSteps: row(pattern.chordSteps),
+    bass: steps(pattern.bass),
+    params,
+    transport: { playing: true, startAt, bpm: pattern.bpm },
   };
+}
+
+export function exportPattern(state: State): string {
+  const hits = (r: boolean[]) => r.flatMap((on, i) => (on ? [i] : []));
+  const bass: Record<string, number> = {};
+  state.bass.forEach((v, i) => { if (v >= 0) bass[String(i)] = v; });
+  return JSON.stringify({
+    bpm: state.transport.bpm,
+    drums: state.drums.map(hits),
+    chordNotes: state.chordNotes,
+    chordSteps: hits(state.chordSteps),
+    bass,
+    params: state.params,
+  }, null, 2);
 }
 
 export function stepMs(bpm: number): number {

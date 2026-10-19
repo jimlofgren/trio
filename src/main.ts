@@ -4,7 +4,7 @@ import { buildControls, type ControlPanel } from './knobs';
 import { createTransport, type Transport } from './net';
 import {
   BASS_NOTES, CONTROLS, DEFAULT_PARAMS, DRUM_NAMES, KEY_COUNT, KEY_LOW, SLOTS, STEPS,
-  bassLabel, defaultState, followOffset, isBlackKey, noteLabel, noteName, stepMs,
+  bassLabel, defaultState, exportPattern, followOffset, isBlackKey, noteLabel, noteName, stepMs,
   type Message, type Player, type Slot, type State,
 } from './state';
 
@@ -15,23 +15,23 @@ let bpmInput: HTMLInputElement;
 
 const params = new URLSearchParams(location.search);
 const ROOM = (params.get('room') ?? 'jam').toLowerCase().replace(/[^a-z0-9-]/g, '') || 'jam';
+const EDIT_ALL = params.has('all');
 
-let net: Transport;
+function canEdit(slot: Slot): boolean {
+  return EDIT_ALL || me.slot === slot;
+}
+
+let net: Transport | null = null;
 let engine: AudioEngine;
 let state: State;
 let me: Player;
 let players: Player[] = [];
-let hydrated = false;
+let synced = false;
 
 const BRAND: Record<Slot, { title: string; sub: string }> = {
   synth: { title: 'Chord Synth', sub: 'polyphonic · dub echo' },
   drums: { title: 'Drum Machine', sub: 'rhythm composer · tempo' },
   bass: { title: 'Bass Synth', sub: 'monophonic · glide' },
-};
-const HINTS: Record<Slot, string> = {
-  synth: 'Pick the notes of your chord on the keys, then place the hits. Duck lets the kick pump the chords.',
-  drums: 'Click a step to toggle the hit. Knobs shape each voice. The kick out cable ducks the other two.',
-  bass: 'Mono bass, one note per step. Peak is the filter resonance, Duck lets the kick pump the bass.',
 };
 const cells: Record<Slot, HTMLElement[][]> = { synth: [], drums: [], bass: [] };
 const controls: Partial<Record<Slot, ControlPanel>> = {};
@@ -40,38 +40,55 @@ const keys: HTMLElement[] = [];
 const cables = new CableLayer($<HTMLDivElement>('#app'));
 
 $<HTMLSpanElement>('#room-label').textContent = `/ ${ROOM}`;
-statusEl.textContent = 'connecting…';
 void enter(localStorage.getItem('trio-name') ?? '', ROOM);
 
+function serverNow(): number {
+  return net ? net.serverNow() : Date.now();
+}
+
 async function enter(name: string, room: string): Promise<void> {
-  net = await createTransport(room);
-  engine = new AudioEngine(() => net.serverNow(), highlightStep);
+  me = { id: '', name, slot: null };
+  engine = new AudioEngine(serverNow, highlightStep);
   engine.onStateChange(renderStatus);
   for (const ev of ['pointerdown', 'keydown'] as const) document.addEventListener(ev, () => void engine.resume());
-  me = { id: net.id, name, slot: null };
-  net.onPlayers(onPlayers);
-  net.onMessage(onMessage);
+  state = defaultState(Date.now());
   buildPanels();
-  cables.add('kick-out', 'synth-duck', () => (hydrated ? state.params.synth.duck : 0), '#e5392c');
-  cables.add('kick-out', 'bass-duck', () => (hydrated ? state.params.bass.duck : 0), '#e5392c');
-  cables.add('bass-pitch', 'synth-pitch', () => (hydrated ? state.params.synth.follow : 0), '#3fb6e8');
-  await net.setPresence(name, null);
-  net.send({ t: 'hello' });
-  window.setTimeout(() => {
-    if (hydrated) return;
-    applyState(defaultState(net.serverNow()));
-    net.send({ t: 'transport', transport: state.transport });
-  }, net.online ? 1200 : 0);
+  cables.add('kick-out', 'synth-duck', () => state.params.synth.duck, '#e5392c');
+  cables.add('kick-out', 'bass-duck', () => state.params.bass.duck, '#e5392c');
+  cables.add('bass-pitch', 'synth-pitch', () => state.params.synth.follow, '#3fb6e8');
+  applyState(state);
   engine.start();
   requestAnimationFrame(playheadLoop);
   renderStatus();
+
+  const transport = await createTransport(room);
+  const localOffset = transport.serverNow() - Date.now();
+  net = transport;
+  me = { ...me, id: net.id };
+  net.onPlayers(onPlayers);
+  net.onMessage(onMessage);
+  await net.setPresence(name, null);
+  const others = net.players().filter((p) => p.id !== me.id);
+  if (others.length === 0) {
+    adoptLocalState(localOffset);
+  } else {
+    net.send({ t: 'hello' });
+    window.setTimeout(() => { if (!synced) adoptLocalState(localOffset); }, 2000);
+  }
+  renderStatus();
+}
+
+function adoptLocalState(offset: number): void {
+  synced = true;
+  state.transport = { ...state.transport, startAt: state.transport.startAt + offset };
+  engine.setState(state);
+  net?.send({ t: 'transport', transport: state.transport });
 }
 
 function applyState(next: State): void {
   state = next;
   state.params ??= structuredClone(DEFAULT_PARAMS);
   for (const slot of SLOTS) state.params[slot] = { ...DEFAULT_PARAMS[slot], ...state.params[slot] };
-  hydrated = true;
   engine.setState(state);
   bpmInput.value = String(state.transport.bpm);
   for (const slot of SLOTS) {
@@ -84,13 +101,15 @@ function applyState(next: State): void {
 function onMessage(msg: Message): void {
   switch (msg.t) {
     case 'hello':
-      if (hydrated) net.send({ t: 'snapshot', state });
+      if (synced) net?.send({ t: 'snapshot', state });
       return;
     case 'snapshot':
-      if (!hydrated) applyState(msg.state);
+      if (!synced) {
+        synced = true;
+        applyState(msg.state);
+      }
       return;
   }
-  if (!hydrated) return;
   switch (msg.t) {
     case 'drums': state.drums = msg.grid; paintGrid('drums'); break;
     case 'chords': state.chordNotes = msg.notes; state.chordSteps = msg.steps; paintGrid('synth'); paintKeys(); break;
@@ -124,7 +143,7 @@ async function autoAssign(): Promise<void> {
   if (keepsMine) return;
   const taken = new Set(players.filter((p) => p.id !== me.id).map((p) => p.slot));
   const free = SLOTS.find((slot) => !taken.has(slot)) ?? null;
-  if (free === me.slot) return;
+  if (free === me.slot || !net) return;
   assigning = true;
   me = { ...me, slot: free };
   try {
@@ -144,19 +163,20 @@ async function rename(value: string): Promise<void> {
   if (name === me.name) return;
   me = { ...me, name };
   localStorage.setItem('trio-name', name);
+  if (!net) return;
   await net.setPresence(me.name, me.slot);
   if (!net.online) onPlayers([me]);
 }
 
 const paramTimers: Partial<Record<Slot, number>> = {};
 function onParam(slot: Slot, key: string, value: number, final: boolean): void {
-  if (!hydrated || me.slot !== slot) return;
+  if (!canEdit(slot)) return;
   state.params[slot][key] = value;
   engine.setState(state);
   controls[slot]?.update(state.params[slot]);
   const flush = () => {
     paramTimers[slot] = undefined;
-    net.send({ t: 'params', slot, params: state.params[slot] });
+    net?.send({ t: 'params', slot, params: state.params[slot] });
   };
   if (final) {
     if (paramTimers[slot]) window.clearTimeout(paramTimers[slot]);
@@ -205,10 +225,6 @@ function buildPanels(): void {
         cells[slot][row][step] = cell;
       }
     }
-    const hint = document.createElement('div');
-    hint.className = 'hint';
-    hint.textContent = HINTS[slot];
-    panel.appendChild(hint);
     renderHead(slot);
   }
 }
@@ -242,12 +258,12 @@ function buildKeyboard(): HTMLElement {
 }
 
 function toggleNote(midi: number): void {
-  if (!hydrated || me.slot !== 'synth') return;
+  if (!canEdit('synth')) return;
   const notes = new Set(state.chordNotes);
   if (notes.has(midi)) notes.delete(midi);
   else notes.add(midi);
   state.chordNotes = [...notes].sort((a, b) => a - b);
-  net.send({ t: 'chords', notes: state.chordNotes, steps: state.chordSteps });
+  net?.send({ t: 'chords', notes: state.chordNotes, steps: state.chordSteps });
   engine.setState(state);
   paintKeys();
 }
@@ -286,8 +302,8 @@ function renderHead(slot: Slot): void {
   const head = panel.querySelector('.panel-head') as HTMLElement;
   const owner = holder(slot);
   const mine = owner?.id === me.id;
-  panel.classList.toggle('mine', mine);
-  if (slot === 'drums' && bpmInput) bpmInput.disabled = !mine;
+  panel.classList.toggle('mine', mine || EDIT_ALL);
+  if (slot === 'drums' && bpmInput) bpmInput.disabled = !canEdit('drums');
   head.innerHTML = '';
   const brand = document.createElement('div');
   brand.className = 'brand-block';
@@ -302,7 +318,7 @@ function renderHead(slot: Slot): void {
   display.textContent = displays[slot]?.textContent ?? '--';
   displays[slot] = display;
   head.appendChild(display);
-  if (slot === 'synth' && hydrated) paintKeys();
+  if (slot === 'synth') paintKeys();
   const who = document.createElement('span');
   who.className = 'who';
   if (mine) {
@@ -322,23 +338,28 @@ function renderHead(slot: Slot): void {
 }
 
 function renderStatus(): void {
+  const sound = engine.running ? '' : ' · click anywhere to enable sound';
+  if (!net) {
+    statusEl.textContent = `connecting…${sound}`;
+    return;
+  }
   const names = players.map((p) => displayName(p) + (p.slot ? '' : ' (watching)')).join(', ');
   const role = me.slot ? `you play ${BRAND[me.slot].title.toLowerCase()}` : 'band is full, you are watching';
   const link = net.online ? `${role} · ${names}` : `${role} · solo mode`;
-  statusEl.textContent = engine.running ? link : `${link} · click anywhere to enable sound`;
+  statusEl.textContent = link + sound;
 }
 
 function toggle(slot: Slot, row: number, step: number): void {
-  if (!hydrated || me.slot !== slot) return;
+  if (!canEdit(slot)) return;
   if (slot === 'drums') {
     state.drums[row][step] = !state.drums[row][step];
-    net.send({ t: 'drums', grid: state.drums });
+    net?.send({ t: 'drums', grid: state.drums });
   } else if (slot === 'synth') {
     state.chordSteps[step] = !state.chordSteps[step];
-    net.send({ t: 'chords', notes: state.chordNotes, steps: state.chordSteps });
+    net?.send({ t: 'chords', notes: state.chordNotes, steps: state.chordSteps });
   } else {
     state.bass[step] = state.bass[step] === row ? -1 : row;
-    net.send({ t: 'bass', steps: state.bass });
+    net?.send({ t: 'bass', steps: state.bass });
   }
   engine.setState(state);
   paintGrid(slot);
@@ -388,7 +409,7 @@ function clearHead(): void {
 }
 
 function playheadLoop(): void {
-  if (hydrated && !state.transport.playing) clearHead();
+  if (!state.transport.playing) clearHead();
   cables.update();
   requestAnimationFrame(playheadLoop);
 }
@@ -396,24 +417,29 @@ function playheadLoop(): void {
 function setTransport(patch: Partial<State['transport']>): void {
   state.transport = { ...state.transport, ...patch };
   engine.setState(state);
-  net.send({ t: 'transport', transport: state.transport });
+  net?.send({ t: 'transport', transport: state.transport });
 }
 
 $<HTMLButtonElement>('#play').addEventListener('click', () => {
-  if (!hydrated) return;
   void engine.resume();
-  setTransport({ playing: true, startAt: net.serverNow() + 100 });
+  setTransport({ playing: true, startAt: serverNow() + 100 });
 });
 
 $<HTMLButtonElement>('#stop').addEventListener('click', () => {
-  if (hydrated) setTransport({ playing: false });
+  setTransport({ playing: false });
+});
+
+$<HTMLButtonElement>('#copy').addEventListener('click', async () => {
+  await navigator.clipboard.writeText(exportPattern(state));
+  statusEl.textContent = 'pattern copied · paste it into src/default-pattern.json';
+  window.setTimeout(renderStatus, 4000);
 });
 
 function onBpmChange(): void {
-  if (!hydrated || me.slot !== 'drums') return;
+  if (!canEdit('drums')) return;
   const bpm = Math.min(180, Math.max(60, Number(bpmInput.value) || 110));
   bpmInput.value = String(bpm);
-  const now = net.serverNow();
+  const now = serverNow();
   const elapsedSteps = Math.max(0, (now - state.transport.startAt) / stepMs(state.transport.bpm));
   setTransport({ bpm, startAt: now - elapsedSteps * stepMs(bpm) });
 }

@@ -52,7 +52,14 @@ class AblyTransport implements Transport {
   }
 
   async connect(): Promise<void> {
-    await this.client.connection.once('connected');
+    await new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(() => reject(new Error('realtime connect timeout')), 6000);
+      this.client.connection.once('connected', () => { window.clearTimeout(timer); resolve(); });
+      this.client.connection.on('failed', (change) => { window.clearTimeout(timer); reject(change.reason ?? new Error('connection failed')); });
+      this.client.connection.on('disconnected', (change) => {
+        if (change.reason?.code === 80019) { window.clearTimeout(timer); reject(change.reason); }
+      });
+    });
     await this.syncClock();
     this.channel.subscribe('msg', (m) => {
       this.messageCb(m.data as Message, m.clientId ?? '');
@@ -63,17 +70,17 @@ class AblyTransport implements Transport {
   }
 
   private async syncClock(): Promise<void> {
-    let best = Infinity;
-    for (let i = 0; i < 4; i++) {
+    const samples = await Promise.all(Array.from({ length: 3 }, async () => {
       const t0 = Date.now();
       const server = await this.client.time();
       const t1 = Date.now();
-      const rtt = t1 - t0;
-      if (rtt < best) {
-        best = rtt;
-        this.offset = server + rtt / 2 - t1;
-      }
-    }
+      return { rtt: t1 - t0, offset: server + (t1 - t0) / 2 - t1 };
+    }));
+    this.offset = samples.sort((a, b) => a.rtt - b.rtt)[0].offset;
+  }
+
+  close(): void {
+    this.client.close();
   }
 
   private async refreshPlayers(): Promise<void> {
@@ -92,19 +99,19 @@ class AblyTransport implements Transport {
   onPlayers(cb: (players: Player[]) => void) { this.playersCb = cb; }
   async setPresence(name: string, slot: Slot | null) {
     await this.channel.presence.update({ name, slot });
+    await this.refreshPlayers();
   }
   players() { return this.list; }
 }
 
 export async function createTransport(room: string): Promise<Transport> {
+  const t = new AblyTransport(room);
   try {
-    const probe = await fetch('/api/token');
-    if (!probe.ok) throw new Error(`token endpoint returned ${probe.status}`);
-    const t = new AblyTransport(room);
     await t.connect();
     return t;
   } catch (err) {
     console.warn('Realtime unavailable, running solo:', err);
+    t.close();
     return new LocalTransport();
   }
 }
