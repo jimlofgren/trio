@@ -429,6 +429,7 @@ $<HTMLButtonElement>('#stop').addEventListener('click', () => {
   setTransport({ playing: false });
 });
 
+$<HTMLButtonElement>('#copy').hidden = !EDIT_ALL;
 $<HTMLButtonElement>('#copy').addEventListener('click', async () => {
   await navigator.clipboard.writeText(exportPattern(state));
   statusEl.textContent = 'pattern copied · paste it into src/default-pattern.json';

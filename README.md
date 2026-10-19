@@ -14,7 +14,7 @@ Three players, one groove. A browser band where one person plays a chord synth, 
 
 ## Making your own default pattern
 
-Open the page with `?all` in the URL (for example `http://localhost:5180/?room=mine&all`) and every panel becomes editable, so you can program all three instruments yourself. Play until the groove is right, press "Copy pattern" in the top bar, and paste the clipboard contents over `src/default-pattern.json`. Every new room then starts from that pattern, including knob settings.
+Open the page with `?all` in the URL (for example `http://localhost:5180/?room=mine&all`) and every panel becomes editable, so you can program all three instruments yourself. Play until the groove is right, press the "Copy pattern" button that appears in the top bar in this mode, and paste the clipboard contents over `src/default-pattern.json`. Every new room then starts from that pattern, including knob settings.
 
 ## How it works
 
