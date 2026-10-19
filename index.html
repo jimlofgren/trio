@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trio</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <header class="bar">
+        <div class="brand">Trio <span id="room-label"></span></div>
+        <div class="transport">
+          <button id="play">Play</button>
+          <button id="stop">Stop</button>
+        </div>
+        <div id="status" class="status"></div>
+      </header>
+      <main class="panels">
+        <section class="panel synth" data-slot="synth"></section>
+        <section class="panel drums" data-slot="drums"></section>
+        <section class="panel bass" data-slot="bass"></section>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
