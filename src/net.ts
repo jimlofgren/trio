@@ -26,7 +26,7 @@ class LocalTransport implements Transport {
   onMessage() {}
   onPlayers(cb: (players: Player[]) => void) { this.playersCb = cb; }
   async setPresence(name: string, slot: Slot | null) {
-    this.list = [{ id: this.id, name, slot }];
+    this.list = [{ id: this.id, name, slot, since: Date.now() }];
     this.playersCb(this.list);
   }
   players() { return this.list; }
@@ -89,6 +89,7 @@ class AblyTransport implements Transport {
       id: m.clientId ?? '',
       name: (m.data?.name as string) ?? '?',
       slot: (m.data?.slot as Slot | null) ?? null,
+      since: m.timestamp ?? 0,
     }));
     this.playersCb(this.list);
   }

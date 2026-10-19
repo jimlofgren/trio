@@ -107,6 +107,7 @@ export interface Player {
   id: string;
   name: string;
   slot: Slot | null;
+  since: number;
 }
 
 export type Message =

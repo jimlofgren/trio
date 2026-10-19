@@ -47,7 +47,7 @@ function serverNow(): number {
 }
 
 async function enter(name: string, room: string): Promise<void> {
-  me = { id: '', name, slot: null };
+  me = { id: '', name, slot: null, since: 0 };
   engine = new AudioEngine(serverNow, highlightStep);
   engine.onStateChange(renderStatus);
   for (const ev of ['pointerdown', 'keydown'] as const) document.addEventListener(ev, () => void engine.resume());
@@ -133,7 +133,9 @@ function onPlayers(list: Player[]): void {
 }
 
 function holder(slot: Slot): Player | undefined {
-  return players.filter((p) => p.slot === slot).sort((a, b) => a.id.localeCompare(b.id))[0];
+  return players
+    .filter((p) => p.slot === slot)
+    .sort((a, b) => a.since - b.since || a.id.localeCompare(b.id))[0];
 }
 
 let assigning = false;
@@ -142,10 +144,14 @@ async function autoAssign(): Promise<void> {
   const keepsMine = me.slot && holder(me.slot)?.id === me.id;
   if (keepsMine) return;
   const taken = new Set(players.filter((p) => p.id !== me.id).map((p) => p.slot));
-  const free = SLOTS.find((slot) => !taken.has(slot)) ?? null;
+  const preferred = localStorage.getItem('trio-slot') as Slot | null;
+  const free = (preferred && SLOTS.includes(preferred) && !taken.has(preferred) ? preferred : null)
+    ?? SLOTS.find((slot) => !taken.has(slot))
+    ?? null;
   if (free === me.slot || !net) return;
   assigning = true;
   me = { ...me, slot: free };
+  if (free) localStorage.setItem('trio-slot', free);
   try {
     await net.setPresence(me.name, me.slot);
   } finally {
