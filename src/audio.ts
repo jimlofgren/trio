@@ -1,4 +1,4 @@
-import { BASS_LOW, STEPS, followOffset, stepMs, type Params, type State } from './state';
+import { BASS_LOW, STEPS, followOffset, stepMs, type Params, type State, type Transport } from './state';
 
 const LOOKAHEAD_S = 0.12;
 const TICK_MS = 25;
@@ -33,6 +33,7 @@ export class AudioEngine {
   private nextStep = 0;
   private timer: number | null = null;
   private state: State | null = null;
+  private transport: Transport | null = null;
   private serverNow: () => number;
   private onStep: (step: number) => void;
   private stateListeners: Array<() => void> = [];
@@ -99,12 +100,14 @@ export class AudioEngine {
   }
 
   setState(state: State): void {
+    const t = state.transport;
     const transportChanged =
-      !this.state ||
-      this.state.transport.startAt !== state.transport.startAt ||
-      this.state.transport.bpm !== state.transport.bpm ||
-      this.state.transport.playing !== state.transport.playing;
+      !this.transport ||
+      this.transport.startAt !== t.startAt ||
+      this.transport.bpm !== t.bpm ||
+      this.transport.playing !== t.playing;
     this.state = state;
+    this.transport = { ...t };
     this.applyEcho();
     if (transportChanged) this.realign();
   }

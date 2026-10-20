@@ -117,7 +117,11 @@ function onMessage(msg: Message): void {
       state.params[msg.slot] = { ...DEFAULT_PARAMS[msg.slot], ...msg.params };
       controls[msg.slot]?.update(state.params[msg.slot]);
       break;
-    case 'transport': state.transport = msg.transport; bpmInput.value = String(msg.transport.bpm); break;
+    case 'transport':
+      state.transport = msg.transport;
+      bpmInput.value = String(msg.transport.bpm);
+      if (!msg.transport.playing) clearHead();
+      break;
   }
   engine.setState(state);
 }
@@ -430,15 +434,18 @@ function playheadLoop(): void {
 function setTransport(patch: Partial<State['transport']>): void {
   state.transport = { ...state.transport, ...patch };
   engine.setState(state);
+  if (!state.transport.playing) clearHead();
   net?.send({ t: 'transport', transport: state.transport });
 }
 
 $<HTMLButtonElement>('#play').addEventListener('click', () => {
   void engine.resume();
+  if (!me.slot && !EDIT_ALL) return;
   setTransport({ playing: true, startAt: serverNow() + 100 });
 });
 
 $<HTMLButtonElement>('#stop').addEventListener('click', () => {
+  if (!me.slot && !EDIT_ALL) return;
   setTransport({ playing: false });
 });
 
