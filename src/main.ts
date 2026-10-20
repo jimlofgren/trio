@@ -39,7 +39,6 @@ const displays: Partial<Record<Slot, HTMLElement>> = {};
 const keys: HTMLElement[] = [];
 const cables = new CableLayer($<HTMLDivElement>('#app'));
 
-$<HTMLSpanElement>('#room-label').textContent = `/ ${ROOM}`;
 void enter(localStorage.getItem('trio-name') ?? '', ROOM);
 
 function serverNow(): number {
@@ -138,11 +137,16 @@ function holder(slot: Slot): Player | undefined {
     .sort((a, b) => a.since - b.since || a.id.localeCompare(b.id))[0];
 }
 
+function waitingLine(): Player[] {
+  return players.filter((p) => !p.slot).sort((a, b) => a.since - b.since || a.id.localeCompare(b.id));
+}
+
 let assigning = false;
 async function autoAssign(): Promise<void> {
   if (assigning) return;
   const keepsMine = me.slot && holder(me.slot)?.id === me.id;
   if (keepsMine) return;
+  if (!me.slot && waitingLine()[0]?.id !== me.id) return;
   const taken = new Set(players.filter((p) => p.id !== me.id).map((p) => p.slot));
   const preferred = localStorage.getItem('trio-slot') as Slot | null;
   const free = (preferred && SLOTS.includes(preferred) && !taken.has(preferred) ? preferred : null)
@@ -338,7 +342,7 @@ function renderHead(slot: Slot): void {
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
     who.appendChild(input);
   } else {
-    who.innerHTML = owner ? `<b>${escapeHtml(displayName(owner))}</b>` : 'free';
+    who.innerHTML = owner ? `<b>${escapeHtml(displayName(owner))}</b>` : 'open spot';
   }
   head.appendChild(who);
 }
@@ -349,8 +353,11 @@ function renderStatus(): void {
     statusEl.textContent = `connecting…${sound}`;
     return;
   }
-  const names = players.map((p) => displayName(p) + (p.slot ? '' : ' (watching)')).join(', ');
-  const role = me.slot ? `you play ${BRAND[me.slot].title.toLowerCase()}` : 'band is full, you are watching';
+  const names = players.map((p) => displayName(p) + (p.slot ? '' : ' (waiting)')).join(', ');
+  const place = waitingLine().findIndex((p) => p.id === me.id) + 1;
+  const role = me.slot
+    ? `you play ${BRAND[me.slot].title.toLowerCase()}`
+    : place <= 1 ? 'band is full · you get the next open spot' : `band is full · ${place - 1} ahead of you in line`;
   const link = net.online ? `${role} · ${names}` : `${role} · solo mode`;
   statusEl.textContent = link + sound;
 }

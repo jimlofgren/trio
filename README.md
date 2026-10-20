@@ -10,7 +10,7 @@ Three players, one groove. A browser band where one person plays a chord synth, 
 - Knob settings are part of the shared state, so everyone hears the same sound.
 - Your own instrument is shown in colour; the others are black and white and read-only.
 - Anyone can press Play / Stop. Only the drummer changes the tempo.
-- The page opens straight into the room `jam`. Add `?room=name` to the URL for a different room. You are handed the first free instrument on arrival; type your name in the field in your panel. A fourth visitor watches.
+- The page opens straight into the room `jam`. Add `?room=name` to the URL for a different room. You are handed the first open instrument on arrival; type your name in the field in your panel. Extra visitors wait in line and automatically take the next instrument that opens up, longest wait first.
 
 ## Making your own default pattern
 

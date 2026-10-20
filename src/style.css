@@ -110,7 +110,6 @@ input {
 }
 
 .brand { font-weight: 700; letter-spacing: 0.08em; }
-.brand span { color: var(--muted); font-weight: 400; margin-left: 8px; }
 .transport { display: flex; align-items: center; gap: 8px; }
 .transport button {
   background: linear-gradient(#2a2a32, #17171c);
