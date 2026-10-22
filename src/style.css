@@ -554,3 +554,37 @@ input {
 .panel.bass .cell.beat { background: linear-gradient(#2c2c2c, #1e1e1e); }
 .panel.bass .cell.on { background: linear-gradient(#c4ffcb, var(--accent)); border-color: var(--accent); box-shadow: 0 0 8px rgba(159, 240, 168, 0.6); }
 .panel.bass .cell.head { border-color: #fff; }
+
+.waiting { display: none; }
+
+@media (max-width: 900px) {
+  .app { height: 100dvh; }
+  .bar { gap: 10px; padding: 8px 12px; }
+  .transport button { padding: 6px 12px; }
+  .status { font-size: 11px; text-align: right; line-height: 1.3; }
+  .panels { grid-template-columns: 1fr; padding: 4px; gap: 4px; }
+  .panel:not(.mine) { display: none; }
+  .panel { padding: 22px 14px 20px; gap: 10px; }
+  .panel.synth { border-left-width: 8px; border-right-width: 8px; }
+  .panel-head { flex-wrap: wrap; gap: 8px 10px; }
+  .panel-head .who { margin-left: 0; flex-basis: 100%; }
+  .name-input { width: 100%; }
+  .cables { display: none; }
+  .controls { gap: 6px 8px; }
+  .knob, .jack { width: 40px; }
+  .grid { grid-template-columns: 24px repeat(16, 1fr); gap: 2px; }
+  .grid .label { font-size: 8px; padding-right: 3px; }
+  .cell { touch-action: manipulation; }
+  .panel.drums .grid { gap: 2px; }
+  .panel.drums .cell { aspect-ratio: 0.8; }
+  .panel.drums .grid .label { font-size: 8px; }
+  .keys { height: 76px; }
+  .key.white { font-size: 7px; }
+  .waiting {
+    display: grid;
+    place-items: center;
+    padding: 40px 24px;
+    color: var(--muted);
+    text-align: center;
+  }
+}

@@ -364,6 +364,7 @@ function renderStatus(): void {
     : place <= 1 ? 'band is full · you get the next open spot' : `band is full · ${place - 1} ahead of you in line`;
   const link = net.online ? `${role} · ${names}` : `${role} · solo mode`;
   statusEl.textContent = link + sound;
+  $<HTMLDivElement>('#waiting').hidden = !!me.slot || EDIT_ALL;
 }
 
 function toggle(slot: Slot, row: number, step: number): void {
