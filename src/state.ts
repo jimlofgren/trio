@@ -1,8 +1,10 @@
 import pattern from './default-pattern.json';
 
 export const STEPS = 16;
-export type Slot = 'synth' | 'drums' | 'bass';
-export const SLOTS: Slot[] = ['synth', 'drums', 'bass'];
+export type Slot = 'synth' | 'drums' | 'bass' | 'sampler';
+export const SLOTS: Slot[] = ['synth', 'drums', 'bass', 'sampler'];
+export const SAMPLE_RATE = 16000;
+export const SAMPLE_MAX_SECONDS = 4;
 
 export const DRUM_NAMES = ['BD', 'SD', 'CH', 'OH'] as const;
 
@@ -52,6 +54,7 @@ export const CONTROLS: Record<Slot, ControlSpec[]> = {
     { key: 'mix', label: 'Mix', group: 'echo' },
     { key: 'duckIn', label: 'In', jack: 'synth-duck', group: 'sidechain' },
     { key: 'duck', label: 'Duck', group: 'sidechain' },
+    { key: 'volume', label: 'Volume', group: 'out' },
   ],
   drums: [
     { key: 'kickTone', label: 'Tone', group: 'Bass Drum' },
@@ -64,6 +67,7 @@ export const CONTROLS: Record<Slot, ControlSpec[]> = {
     { key: 'openDecay', label: 'Decay', group: 'Open Hat' },
     { key: 'openLevel', label: 'Level', group: 'Open Hat' },
     { key: 'kickOut', label: 'Kick', jack: 'kick-out', group: 'Out' },
+    { key: 'volume', label: 'Volume', group: 'Out' },
   ],
   bass: [
     { key: 'attack', label: 'A', group: 'envelope' },
@@ -79,13 +83,29 @@ export const CONTROLS: Record<Slot, ControlSpec[]> = {
     { key: 'duckIn', label: 'In', jack: 'bass-duck', group: 'sidechain' },
     { key: 'duck', label: 'Duck', group: 'sidechain' },
     { key: 'pitchOut', label: 'Pitch', jack: 'bass-pitch', group: 'out' },
+    { key: 'volume', label: 'Volume', group: 'out' },
+  ],
+  sampler: [
+    { key: 'pitch', label: 'Pitch', group: 'sample' },
+    { key: 'start', label: 'Start', group: 'sample' },
+    { key: 'length', label: 'Length', group: 'sample' },
+    { key: 'reverse', label: 'Dir', options: ['Fwd', 'Rev'], group: 'sample' },
+    { key: 'cutoff', label: 'Cutoff', group: 'filter' },
+    { key: 'echoDiv', label: 'Time', options: ['1/8', '3/16', '1/4'], group: 'echo' },
+    { key: 'echoFeedback', label: 'Feedback', group: 'echo' },
+    { key: 'echoMix', label: 'Mix', group: 'echo' },
+    { key: 'reverb', label: 'Reverb', group: 'space' },
+    { key: 'duckIn', label: 'In', jack: 'sampler-duck', group: 'sidechain' },
+    { key: 'duck', label: 'Duck', group: 'sidechain' },
+    { key: 'volume', label: 'Volume', group: 'out' },
   ],
 };
 
 export const DEFAULT_PARAMS: Record<Slot, Params> = {
-  synth: { filterType: 0, cutoff: 0.55, res: 0.3, envAmt: 0.45, attack: 0.03, decay: 0.35, sustain: 0.3, release: 0.35, gate: 0.4, delayDiv: 1, feedback: 0.55, mix: 0.45, duck: 0.5, follow: 0 },
-  drums: { kickTone: 0.4, kickDecay: 0.6, kickLevel: 0.9, snareTone: 0.5, snareSnap: 0.6, snareLevel: 0.7, hatLevel: 0.5, openDecay: 0.5, openLevel: 0.5 },
-  bass: { attack: 0.02, decay: 0.4, sustain: 0.35, release: 0.2, cutoff: 0.4, peak: 0.45, env: 0.5, sub: 0.5, glide: 0, gate: 0.5, duck: 0.35 },
+  synth: { filterType: 0, cutoff: 0.55, res: 0.3, envAmt: 0.45, attack: 0.03, decay: 0.35, sustain: 0.3, release: 0.35, gate: 0.4, delayDiv: 1, feedback: 0.55, mix: 0.45, duck: 0.5, follow: 0, volume: 0.7 },
+  drums: { kickTone: 0.4, kickDecay: 0.6, kickLevel: 0.9, snareTone: 0.5, snareSnap: 0.6, snareLevel: 0.7, hatLevel: 0.5, openDecay: 0.5, openLevel: 0.5, volume: 0.7 },
+  bass: { attack: 0.02, decay: 0.4, sustain: 0.35, release: 0.2, cutoff: 0.4, peak: 0.45, env: 0.5, sub: 0.5, glide: 0, gate: 0.5, duck: 0.35, volume: 0.7 },
+  sampler: { pitch: 0.5, start: 0, length: 1, reverse: 0, cutoff: 1, echoDiv: 1, echoFeedback: 0.45, echoMix: 0.35, reverb: 0.25, duck: 0.4, volume: 0.7 },
 };
 
 export interface Transport {
@@ -94,11 +114,18 @@ export interface Transport {
   bpm: number;
 }
 
+export interface SamplerState {
+  id: string | null;
+  seconds: number;
+  steps: boolean[];
+}
+
 export interface State {
   drums: boolean[][];
   chordNotes: number[];
   chordSteps: boolean[];
   bass: number[];
+  sampler: SamplerState;
   params: Record<Slot, Params>;
   transport: Transport;
 }
@@ -117,6 +144,9 @@ export type Message =
   | { t: 'chords'; notes: number[]; steps: boolean[] }
   | { t: 'bass'; steps: number[] }
   | { t: 'params'; slot: Slot; params: Params }
+  | { t: 'sampler'; sampler: SamplerState }
+  | { t: 'sample'; id: string; part: number; total: number; data: string }
+  | { t: 'need-sample'; id: string }
   | { t: 'transport'; transport: Transport };
 
 function row(hits: number[]): boolean[] {
@@ -139,6 +169,7 @@ export function defaultState(startAt: number): State {
     chordNotes: [...pattern.chordNotes],
     chordSteps: row(pattern.chordSteps),
     bass: steps(pattern.bass),
+    sampler: { id: null, seconds: 0, steps: row(pattern.samplerSteps) },
     params,
     transport: { playing: true, startAt, bpm: pattern.bpm },
   };
@@ -154,6 +185,7 @@ export function exportPattern(state: State): string {
     chordNotes: state.chordNotes,
     chordSteps: hits(state.chordSteps),
     bass,
+    samplerSteps: hits(state.sampler.steps),
     params: state.params,
   }, null, 2);
 }

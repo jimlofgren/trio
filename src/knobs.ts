@@ -64,7 +64,7 @@ function buildKnob(
   updaters: Array<(p: Params) => void>,
 ): HTMLElement {
   const wrap = document.createElement('div');
-  wrap.className = 'knob';
+  wrap.className = 'knob' + (spec.key === 'volume' ? ' volume' : '');
   const dial = document.createElement('div');
   dial.className = 'dial';
   const pointer = document.createElement('div');

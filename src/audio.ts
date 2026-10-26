@@ -1,4 +1,4 @@
-import { BASS_LOW, STEPS, followOffset, stepMs, type Params, type State, type Transport } from './state';
+import { BASS_LOW, SAMPLE_RATE, STEPS, followOffset, stepMs, type Params, type Slot, type State, type Transport } from './state';
 
 const LOOKAHEAD_S = 0.12;
 const TICK_MS = 25;
@@ -28,7 +28,17 @@ export class AudioEngine {
   private echoFeedback!: GainNode;
   private synthDuck!: GainNode;
   private bassDuck!: GainNode;
+  private samplerBus!: GainNode;
+  private samplerDuck!: GainNode;
+  private samplerEchoSend!: GainNode;
+  private samplerEchoDelay!: DelayNode;
+  private samplerEchoFeedback!: GainNode;
+  private reverbSend!: GainNode;
+  private volumes!: Record<Slot, GainNode>;
   private noise!: AudioBuffer;
+  private sampleRaw: Float32Array | null = null;
+  private sampleBuffer: AudioBuffer | null = null;
+  private sampleReversed: AudioBuffer | null = null;
   private bassVoice: { gain: GainNode; oscs: OscillatorNode[]; hz: number } | null = null;
   private nextStep = 0;
   private timer: number | null = null;
@@ -57,13 +67,23 @@ export class AudioEngine {
     this.master.connect(comp).connect(ctx.destination);
     this.noise = this.makeNoise();
 
+    this.volumes = {
+      synth: ctx.createGain(),
+      drums: ctx.createGain(),
+      bass: ctx.createGain(),
+      sampler: ctx.createGain(),
+    };
+    for (const v of Object.values(this.volumes)) v.connect(this.master);
+
     this.drumBus = ctx.createGain();
-    this.drumBus.connect(this.master);
+    this.drumBus.connect(this.volumes.drums);
 
     this.synthDuck = ctx.createGain();
-    this.synthDuck.connect(this.master);
+    this.synthDuck.connect(this.volumes.synth);
     this.bassDuck = ctx.createGain();
-    this.bassDuck.connect(this.master);
+    this.bassDuck.connect(this.volumes.bass);
+    this.samplerDuck = ctx.createGain();
+    this.samplerDuck.connect(this.volumes.sampler);
 
     this.synthBus = ctx.createGain();
     this.synthBus.gain.value = 1.4;
@@ -80,8 +100,53 @@ export class AudioEngine {
     this.bassBus = ctx.createGain();
     this.bassBus.gain.value = 0.9;
     this.bassBus.connect(this.drive(1.6)).connect(this.bassDuck);
-    if (this.state) this.applyEcho();
+
+    this.samplerBus = ctx.createGain();
+    this.samplerBus.connect(this.samplerDuck);
+    this.samplerEchoSend = ctx.createGain();
+    this.samplerEchoDelay = ctx.createDelay(2);
+    this.samplerEchoFeedback = ctx.createGain();
+    const samplerEchoTone = this.filter(2600, 'lowpass', 0.7);
+    this.samplerBus.connect(this.samplerEchoSend).connect(this.samplerEchoDelay);
+    this.samplerEchoDelay.connect(samplerEchoTone).connect(this.samplerEchoFeedback).connect(this.samplerEchoDelay);
+    this.samplerEchoFeedback.connect(this.samplerDuck);
+    this.reverbSend = ctx.createGain();
+    const reverb = ctx.createConvolver();
+    reverb.buffer = this.makeImpulse(2.2);
+    this.samplerBus.connect(this.reverbSend).connect(reverb).connect(this.samplerDuck);
+
+    if (this.sampleRaw) this.buildSampleBuffers(this.sampleRaw);
+    if (this.state) this.applyLevels();
     return ctx;
+  }
+
+  setSample(data: Float32Array | null): void {
+    this.sampleRaw = data;
+    if (!this.ctx) return;
+    if (data) this.buildSampleBuffers(data);
+    else this.sampleBuffer = this.sampleReversed = null;
+  }
+
+  private buildSampleBuffers(data: Float32Array): void {
+    const ctx = this.ctx!;
+    const buffer = ctx.createBuffer(1, data.length, SAMPLE_RATE);
+    buffer.getChannelData(0).set(data);
+    const reversed = ctx.createBuffer(1, data.length, SAMPLE_RATE);
+    const back = reversed.getChannelData(0);
+    for (let i = 0; i < data.length; i++) back[i] = data[data.length - 1 - i];
+    this.sampleBuffer = buffer;
+    this.sampleReversed = reversed;
+  }
+
+  private makeImpulse(seconds: number): AudioBuffer {
+    const ctx = this.ctx!;
+    const length = Math.floor(ctx.sampleRate * seconds);
+    const buf = ctx.createBuffer(2, length, ctx.sampleRate);
+    for (let c = 0; c < 2; c++) {
+      const d = buf.getChannelData(c);
+      for (let i = 0; i < length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2.5);
+    }
+    return buf;
   }
 
   get running(): boolean {
@@ -108,7 +173,7 @@ export class AudioEngine {
       this.transport.playing !== t.playing;
     this.state = state;
     this.transport = { ...t };
-    this.applyEcho();
+    this.applyLevels();
     if (transportChanged) this.realign();
   }
 
@@ -118,14 +183,24 @@ export class AudioEngine {
     this.timer = window.setInterval(() => this.tick(), TICK_MS);
   }
 
-  private applyEcho(): void {
+  private applyLevels(): void {
     if (!this.ctx) return;
-    const p = this.state!.params.synth;
-    const beat = 60 / this.state!.transport.bpm;
+    const s = this.state!;
+    const p = s.params.synth;
+    const beat = 60 / s.transport.bpm;
     const t = this.ctx.currentTime;
     this.echoDelay.delayTime.setTargetAtTime(beat * (DELAY_BEATS[p.delayDiv] ?? 1), t, 0.05);
     this.echoFeedback.gain.setTargetAtTime(lin(p.feedback, 0, 0.85), t, 0.02);
     this.echoSend.gain.setTargetAtTime(lin(p.mix, 0, 0.9), t, 0.02);
+    const sp = s.params.sampler;
+    this.samplerEchoDelay.delayTime.setTargetAtTime(beat * (DELAY_BEATS[sp.echoDiv] ?? 1), t, 0.05);
+    this.samplerEchoFeedback.gain.setTargetAtTime(lin(sp.echoFeedback, 0, 0.85), t, 0.02);
+    this.samplerEchoSend.gain.setTargetAtTime(lin(sp.echoMix, 0, 0.9), t, 0.02);
+    this.reverbSend.gain.setTargetAtTime(lin(sp.reverb, 0, 0.8), t, 0.02);
+    for (const slot of Object.keys(this.volumes) as Slot[]) {
+      const v = s.params[slot].volume ?? 0.7;
+      this.volumes[slot].gain.setTargetAtTime(v * v * 2, t, 0.02);
+    }
   }
 
   currentStep(): number {
@@ -181,6 +256,7 @@ export class AudioEngine {
     }
     const bass = s.bass[step];
     if (bass >= 0) this.bass(BASS_LOW + bass, when, stepS, s.params.bass);
+    if (s.sampler.steps[step] && this.sampleBuffer) this.playSample(when, s.params.sampler);
     const delay = Math.max(0, (when - this.ctx!.currentTime) * 1000);
     window.setTimeout(() => this.onStep(step), delay);
   }
@@ -245,11 +321,39 @@ export class AudioEngine {
   private duck(when: number): void {
     const s = this.state!;
     const tau = (60 / s.transport.bpm) * 0.25;
-    for (const [gain, amount] of [[this.synthDuck, s.params.synth.duck], [this.bassDuck, s.params.bass.duck]] as const) {
+    const targets = [
+      [this.synthDuck, s.params.synth.duck],
+      [this.bassDuck, s.params.bass.duck],
+      [this.samplerDuck, s.params.sampler.duck],
+    ] as const;
+    for (const [gain, amount] of targets) {
       if (amount <= 0) continue;
       gain.gain.setTargetAtTime(1 - amount * 0.95, when, 0.004);
       gain.gain.setTargetAtTime(1, when + 0.04, tau);
     }
+  }
+
+  private playSample(when: number, p: Params): void {
+    const ctx = this.ctx!;
+    const buffer = (p.reverse === 1 ? this.sampleReversed : this.sampleBuffer)!;
+    const rate = Math.pow(2, (p.pitch * 24 - 12) / 12);
+    const total = buffer.duration;
+    const startSec = Math.min(p.start * total, Math.max(0, total - 0.05));
+    const lenSec = Math.max(0.05, Math.min(total - startSec, lin(p.length, 0.05, total)));
+    const offset = p.reverse === 1 ? Math.max(0, total - startSec - lenSec) : startSec;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.playbackRate.value = rate;
+    const lp = this.filter(expo(p.cutoff, 200, 12000), 'lowpass', 0.8);
+    const g = ctx.createGain();
+    const playSec = lenSec / rate;
+    g.gain.setValueAtTime(0.0001, when);
+    g.gain.linearRampToValueAtTime(0.9, when + 0.004);
+    g.gain.setValueAtTime(0.9, when + Math.max(0.004, playSec - 0.03));
+    g.gain.linearRampToValueAtTime(0.0001, when + playSec);
+    src.connect(lp).connect(g).connect(this.samplerBus);
+    src.start(when, offset);
+    src.stop(when + playSec + 0.01);
   }
 
   private kick(when: number, p: Params): void {

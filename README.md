@@ -1,10 +1,12 @@
 # Trio
 
-Three players, one groove. A browser band where one person plays a chord synth, one plays drums and one plays a mono bass. Everything is step-sequenced (16 steps) against a shared clock, so all three browsers stay in sync.
+Four players, one groove. A browser band where one person plays a chord synth, one plays drums and one plays a mono bass. Everything is step-sequenced (16 steps) against a shared clock, so all three browsers stay in sync.
 
 - Left column: polyphonic chord synth. Pick the notes of one chord on a two-octave keyboard, place its hits on 16 steps. LP/HP filter, resonance, filter envelope, ADSR, gate length and a tempo-synced dub echo.
 - Middle: drum machine with tone, decay, snappy and level knobs per voice. The drummer sets the tempo.
 - Right: mono bass synth with ADSR, gate, cutoff, peak (resonance), envelope amount, sub oscillator and glide.
+- Far right: vocal sampler. Press REC, speak up to four seconds, and the sample is sent to everyone in the room. Place hits on 16 steps and shape it with pitch, start, length, reverse, filter, a tempo-synced echo, reverb and ducking.
+- Every instrument has a Volume knob in its output section.
 - The kick ducks the chords and the bass (sidechain). Each synth has a Duck knob, and patch cables from the drum machine's kick-out jack show the connection and flash on every kick.
 - Follow Bass on the chord synth plugs a cable from the bass pitch out: the chord transposes so its root matches the latest bass note.
 - Knob settings are part of the shared state, so everyone hears the same sound.

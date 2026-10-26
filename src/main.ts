@@ -2,8 +2,9 @@ import { AudioEngine } from './audio';
 import { CableLayer } from './cables';
 import { buildControls, type ControlPanel } from './knobs';
 import { createTransport, type Transport } from './net';
+import { decodeSample, encodeSample, splitChunks, startRecording, type Recording } from './recorder';
 import {
-  BASS_NOTES, CONTROLS, DEFAULT_PARAMS, DRUM_NAMES, KEY_COUNT, KEY_LOW, SLOTS, STEPS,
+  BASS_NOTES, CONTROLS, DEFAULT_PARAMS, DRUM_NAMES, KEY_COUNT, KEY_LOW, SAMPLE_MAX_SECONDS, SAMPLE_RATE, SLOTS, STEPS,
   bassLabel, defaultState, exportPattern, followOffset, isBlackKey, noteLabel, noteName, stepMs,
   type Message, type Player, type Slot, type State,
 } from './state';
@@ -32,8 +33,14 @@ const BRAND: Record<Slot, { title: string; sub: string }> = {
   synth: { title: 'Chord Synth', sub: 'polyphonic · dub echo' },
   drums: { title: 'Drum Machine', sub: 'rhythm composer · tempo' },
   bass: { title: 'Bass Synth', sub: 'monophonic · glide' },
+  sampler: { title: 'Vocal Sampler', sub: 'record · chop · echo' },
 };
-const cells: Record<Slot, HTMLElement[][]> = { synth: [], drums: [], bass: [] };
+const cells: Record<Slot, HTMLElement[][]> = { synth: [], drums: [], bass: [], sampler: [] };
+const samples = new Map<string, Float32Array>();
+const incoming = new Map<string, string[]>();
+let recording: Recording | null = null;
+let recButton: HTMLButtonElement;
+let waveCanvas: HTMLCanvasElement;
 const controls: Partial<Record<Slot, ControlPanel>> = {};
 const displays: Partial<Record<Slot, HTMLElement>> = {};
 const keys: HTMLElement[] = [];
@@ -54,6 +61,7 @@ async function enter(name: string, room: string): Promise<void> {
   buildPanels();
   cables.add('kick-out', 'synth-duck', () => state.params.synth.duck, '#e5392c');
   cables.add('kick-out', 'bass-duck', () => state.params.bass.duck, '#e5392c');
+  cables.add('kick-out', 'sampler-duck', () => state.params.sampler.duck, '#e5392c');
   cables.add('bass-pitch', 'synth-pitch', () => state.params.synth.follow, '#3fb6e8');
   applyState(state);
   engine.start();
@@ -88,7 +96,9 @@ function applyState(next: State): void {
   state = next;
   state.params ??= structuredClone(DEFAULT_PARAMS);
   for (const slot of SLOTS) state.params[slot] = { ...DEFAULT_PARAMS[slot], ...state.params[slot] };
+  state.sampler ??= { id: null, seconds: 0, steps: Array(STEPS).fill(false) };
   engine.setState(state);
+  syncSample();
   bpmInput.value = String(state.transport.bpm);
   for (const slot of SLOTS) {
     paintGrid(slot);
@@ -116,7 +126,19 @@ function onMessage(msg: Message): void {
     case 'params':
       state.params[msg.slot] = { ...DEFAULT_PARAMS[msg.slot], ...msg.params };
       controls[msg.slot]?.update(state.params[msg.slot]);
+      if (msg.slot === 'sampler') drawWave();
       break;
+    case 'sampler':
+      state.sampler = msg.sampler;
+      paintGrid('sampler');
+      syncSample();
+      break;
+    case 'sample':
+      receiveChunk(msg.id, msg.part, msg.total, msg.data);
+      return;
+    case 'need-sample':
+      if (samples.has(msg.id)) sendSample(msg.id);
+      return;
     case 'transport':
       state.transport = msg.transport;
       bpmInput.value = String(msg.transport.bpm);
@@ -188,6 +210,7 @@ function onParam(slot: Slot, key: string, value: number, final: boolean): void {
   state.params[slot][key] = value;
   engine.setState(state);
   controls[slot]?.update(state.params[slot]);
+  if (slot === 'sampler') drawWave();
   const flush = () => {
     paramTimers[slot] = undefined;
     net?.send({ t: 'params', slot, params: state.params[slot] });
@@ -214,17 +237,18 @@ function buildPanels(): void {
     panel.appendChild(panelControls.root);
 
     if (slot === 'synth') panel.appendChild(buildKeyboard());
+    if (slot === 'sampler') panel.insertBefore(buildSampleBar(), panelControls.root);
 
     const grid = document.createElement('div');
     grid.className = 'grid';
     panel.appendChild(grid);
-    const rows = slot === 'drums' ? DRUM_NAMES.length : slot === 'synth' ? 1 : BASS_NOTES;
+    const rows = slot === 'drums' ? DRUM_NAMES.length : slot === 'bass' ? BASS_NOTES : 1;
     cells[slot] = [];
     for (let r = 0; r < rows; r++) {
       const row = slot === 'bass' ? rows - 1 - r : r;
       const label = document.createElement('div');
       label.className = 'label';
-      label.textContent = slot === 'drums' ? DRUM_NAMES[row] : slot === 'synth' ? 'HIT' : bassLabel(row);
+      label.textContent = slot === 'drums' ? DRUM_NAMES[row] : slot === 'bass' ? bassLabel(row) : 'HIT';
       grid.appendChild(label);
       cells[slot][row] = [];
       for (let step = 0; step < STEPS; step++) {
@@ -241,6 +265,135 @@ function buildPanels(): void {
     }
     renderHead(slot);
   }
+}
+
+function syncSample(): void {
+  const id = state.sampler.id;
+  const data = id ? samples.get(id) ?? null : null;
+  engine.setSample(data);
+  drawWave();
+  if (id && !data && !incoming.has(id)) net?.send({ t: 'need-sample', id });
+  updateSamplerDisplay();
+}
+
+function updateSamplerDisplay(): void {
+  const display = displays.sampler;
+  if (!display) return;
+  if (recording) display.textContent = 'REC';
+  else display.textContent = state.sampler.id ? `${state.sampler.seconds.toFixed(1)}s` : '--';
+}
+
+function sendSample(id: string): void {
+  const data = samples.get(id);
+  if (!data || !net) return;
+  const parts = splitChunks(encodeSample(data));
+  parts.forEach((chunk, i) => net!.send({ t: 'sample', id, part: i, total: parts.length, data: chunk }));
+}
+
+function receiveChunk(id: string, part: number, total: number, data: string): void {
+  if (samples.has(id)) return;
+  const parts = incoming.get(id) ?? [];
+  parts[part] = data;
+  incoming.set(id, parts);
+  for (let i = 0; i < total; i++) if (!parts[i]) return;
+  incoming.delete(id);
+  samples.set(id, decodeSample(parts.join('')));
+  if (state.sampler.id === id) syncSample();
+}
+
+function loadSample(data: Float32Array): void {
+  const id = Math.random().toString(36).slice(2, 10);
+  samples.set(id, data);
+  state.sampler = { ...state.sampler, id, seconds: data.length / SAMPLE_RATE };
+  net?.send({ t: 'sampler', sampler: state.sampler });
+  sendSample(id);
+  syncSample();
+}
+
+if (EDIT_ALL) (window as unknown as { trioDebug: unknown }).trioDebug = { loadSample };
+
+async function toggleRecording(): Promise<void> {
+  if (!canEdit('sampler')) return;
+  if (recording) {
+    recording.stop();
+    return;
+  }
+  await engine.resume();
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false } });
+  } catch {
+    statusEl.textContent = 'microphone access was refused';
+    window.setTimeout(renderStatus, 3000);
+    return;
+  }
+  recButton.classList.add('armed');
+  recording = startRecording(stream, (sec) => { if (displays.sampler) displays.sampler.textContent = `REC ${Math.min(sec, SAMPLE_MAX_SECONDS).toFixed(1)}`; });
+  updateSamplerDisplay();
+  try {
+    loadSample(await recording.result);
+  } catch {
+    statusEl.textContent = 'recording failed';
+    window.setTimeout(renderStatus, 3000);
+  } finally {
+    recording = null;
+    recButton.classList.remove('armed');
+    syncSample();
+  }
+}
+
+function drawWave(): void {
+  if (!waveCanvas) return;
+  const ctx2d = waveCanvas.getContext('2d')!;
+  const w = waveCanvas.width = waveCanvas.clientWidth * devicePixelRatio;
+  const h = waveCanvas.height = waveCanvas.clientHeight * devicePixelRatio;
+  ctx2d.clearRect(0, 0, w, h);
+  const data = state.sampler.id ? samples.get(state.sampler.id) : null;
+  if (!data) {
+    ctx2d.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx2d.font = `${11 * devicePixelRatio}px sans-serif`;
+    ctx2d.textAlign = 'center';
+    ctx2d.fillText('no sample yet · press rec and speak', w / 2, h / 2 + 4 * devicePixelRatio);
+    return;
+  }
+  const p = state.params.sampler;
+  const total = data.length / SAMPLE_RATE;
+  const startSec = Math.min(p.start * total, Math.max(0, total - 0.05));
+  const lenSec = Math.max(0.05, Math.min(total - startSec, 0.05 + (total - 0.05) * p.length));
+  const x0 = (startSec / total) * w;
+  const x1 = ((startSec + lenSec) / total) * w;
+  ctx2d.fillStyle = 'rgba(255,122,26,0.18)';
+  ctx2d.fillRect(x0, 0, x1 - x0, h);
+  ctx2d.strokeStyle = '#ff7a1a';
+  ctx2d.lineWidth = devicePixelRatio;
+  ctx2d.beginPath();
+  const step = Math.max(1, Math.floor(data.length / w));
+  for (let x = 0; x < w; x++) {
+    let min = 1;
+    let max = -1;
+    const base = Math.floor((x / w) * data.length);
+    for (let i = base; i < base + step && i < data.length; i++) {
+      min = Math.min(min, data[i]);
+      max = Math.max(max, data[i]);
+    }
+    ctx2d.moveTo(x, (0.5 - max * 0.48) * h);
+    ctx2d.lineTo(x, (0.5 - min * 0.48) * h + devicePixelRatio);
+  }
+  ctx2d.stroke();
+}
+
+function buildSampleBar(): HTMLElement {
+  const bar = document.createElement('div');
+  bar.className = 'sample-bar';
+  recButton = document.createElement('button');
+  recButton.type = 'button';
+  recButton.className = 'rec';
+  recButton.textContent = 'REC';
+  recButton.addEventListener('click', () => void toggleRecording());
+  waveCanvas = document.createElement('canvas');
+  waveCanvas.className = 'wave';
+  bar.append(recButton, waveCanvas);
+  return bar;
 }
 
 function buildKeyboard(): HTMLElement {
@@ -333,6 +486,7 @@ function renderHead(slot: Slot): void {
   displays[slot] = display;
   head.appendChild(display);
   if (slot === 'synth') paintKeys();
+  if (slot === 'sampler') updateSamplerDisplay();
   const who = document.createElement('span');
   who.className = 'who';
   if (mine) {
@@ -375,6 +529,9 @@ function toggle(slot: Slot, row: number, step: number): void {
   } else if (slot === 'synth') {
     state.chordSteps[step] = !state.chordSteps[step];
     net?.send({ t: 'chords', notes: state.chordNotes, steps: state.chordSteps });
+  } else if (slot === 'sampler') {
+    state.sampler.steps[step] = !state.sampler.steps[step];
+    net?.send({ t: 'sampler', sampler: state.sampler });
   } else {
     state.bass[step] = state.bass[step] === row ? -1 : row;
     net?.send({ t: 'bass', steps: state.bass });
@@ -387,7 +544,10 @@ function paintGrid(slot: Slot): void {
   const rows = cells[slot];
   for (let r = 0; r < rows.length; r++) {
     for (let s = 0; s < STEPS; s++) {
-      const on = slot === 'drums' ? state.drums[r][s] : slot === 'synth' ? state.chordSteps[s] : state.bass[s] === r;
+      const on = slot === 'drums' ? state.drums[r][s]
+        : slot === 'synth' ? state.chordSteps[s]
+          : slot === 'sampler' ? state.sampler.steps[s]
+            : state.bass[s] === r;
       rows[r][s].classList.toggle('on', on);
     }
   }
@@ -418,6 +578,7 @@ function updateDisplays(step: number): void {
   displays.drums!.textContent = String(step + 1).padStart(2, '0');
   const note = state.bass[step];
   if (note >= 0) displays.bass!.textContent = bassLabel(note);
+  displays.sampler?.classList.toggle('lit', state.sampler.steps[step] && !!state.sampler.id);
 }
 
 function clearHead(): void {
